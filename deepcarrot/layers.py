@@ -27,3 +27,12 @@ class Relu(object):
 
     def parameters(self):
         return []
+
+
+class LogSoftmax(object):
+    def __init__(self, axis=1):
+        self.axis = axis
+
+    def __call__(self, inputs):
+        out = inputs.logsoftmax(self.axis)
+        return out

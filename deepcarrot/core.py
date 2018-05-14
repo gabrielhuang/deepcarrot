@@ -57,7 +57,16 @@ class AbstractVariable(object):
                                 name='Add({},{})'.format(self.name, other.name))
 
     def __rshift__(self, f):
-        return f(self)
+        '''
+        Use this to chain operators on a variable.
+
+        If f is a string, then set name in-place.
+        '''
+        if isinstance(f, str):
+            self.name = f
+            return self
+        else:  # chain operation
+            return f(self)
 
 
     def relu(self):
@@ -69,6 +78,11 @@ class AbstractVariable(object):
         return ComputedVariable([self],
                                 SumOperator(),
                                 name='Sum({})'.format(self.name))
+
+    def logsoftmax(self, axis):
+        return ComputedVariable([self],
+                                LogSoftmaxOperator(axis),
+                                name='LogSoftmax({})'.format(self.name))
 
 
 class LeafVariable(AbstractVariable):
@@ -193,7 +207,7 @@ class MultiplyOperator(Operator):
         return [jacobian_a, jacobian_b]
 
 
-class AddOperator(Operator):  # create operator later
+class AddOperator(Operator):
 
     def _call(self, (a, b)):
         return a+b
@@ -202,6 +216,47 @@ class AddOperator(Operator):  # create operator later
         jacobian_a = Jacobian(lambda grad: grad, a.shape, a.shape)
         jacobian_b = Jacobian(lambda grad: grad, b.shape, b.shape)
         return [jacobian_a, jacobian_b]
+
+
+class NLLLossOperator(Operator):
+    '''
+    Use between LogSoftmax and ground truth integer indices.
+
+    Output is first argument, target is second argument.
+    Output: 2D float tensor of shape (batch, classes)
+    Ground Truth: 1D integer tensor of shape (batch)
+    '''
+    def __init__(self, average=True):
+        self.average = average
+
+    def __call__(self, inputs):
+        output = np.asarray(inputs[0], dtype=np.float32)
+        target = np.asarray(inputs[1], dtype=np.int64)
+        return self._call([output, target])
+
+    def get_jacobians(self, inputs):
+        output = np.asarray(inputs[0], dtype=np.float32)
+        target = np.asarray(inputs[1], dtype=np.int64)
+        return self._get_jacobians([output, target])
+
+    def _call(self, (output, target)):
+        loss = - np.sum(output[range(len(output)), target])
+        if self.average:
+            loss /= float(len(output))
+        return loss
+
+    def _get_jacobians(self, (output, target)):
+
+        def closure(grad):
+            assert grad.shape == (), 'Gradient must be scalar'
+            out = np.zeros_like(output)
+            out[range(len(output)), target] = -1.
+            if self.average:
+                out /= float(len(output))
+            return out * grad
+
+        jacobian_output = Jacobian(closure, output.shape, 0)
+        return [jacobian_output, None]
 
 
 class TransposeOperator(Operator):
@@ -262,8 +317,14 @@ class SumOperator(Operator):
 
     def _get_jacobians(self, (a,)):
         if self.axis is None:
+
             # This assumes grad is scalar (shape is empty tuple () )
-            return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
+            def closure(grad):
+                assert grad.shape == (), 'gradient must be scalar'
+                return grad * np.ones_like(a)
+
+            return [Jacobian(closure, a.shape, ())]
+            #return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
         else:
             out_shape = list(a.shape)
             del out_shape[self.axis]
@@ -286,27 +347,28 @@ class LogSoftmaxOperator(Operator):
 
     def _call(self, (a,)):
         # Get maximum and subtract it
-        maxes = np.max(a, self.axis)
-        #b =
-        return a.sum(axis=self.axis)
+        maxes = np.max(a, self.axis, keepdims=True)
+        a_adjusted = a - maxes  # will broadcast
+        exp = np.exp(a_adjusted)
+        Z = exp.sum(axis=self.axis, keepdims=True)
+        log_softmax = a_adjusted - np.log(Z)
+        return log_softmax
 
     def _get_jacobians(self, (a,)):
-        if self.axis is None:
-            # This assumes grad is scalar (shape is empty tuple () )
-            return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
-        else:
-            out_shape = list(a.shape)
-            del out_shape[self.axis]
-            grad = np.exp
+        log_softmax = self([a])
+        softmax = np.exp(log_softmax)  # potentially numerically unstable?
 
-            def closure(grad):
-                grad = np.expand_dims(grad, self.axis)
-                return np.repeat(grad, a.shape[self.axis], self.axis),
-            jac = Jacobian(lambda grad: np.repeat(grad, a.shape[self.axis], self.axis),
-                     a.shape,
-                     out_shape)
-            return [jac]
+        def closure(grad):
+            return grad - np.sum(grad*softmax, axis=self.axis, keepdims=True)
 
+        jac = Jacobian(closure, a.shape, a.shape)
+        return [jac]
+
+
+def nll(output, target):
+    return ComputedVariable([output, target],
+                            NLLLossOperator(),
+                            name='nll({},{})'.format(output.name, target.name))
 
 def matmatmul(m, n):
     return ComputedVariable([m, n],
@@ -322,9 +384,10 @@ def grad(output, inputs):
     '''
     contributions = output._get_contributions()
     grads_cache = {}
-    grads_cache[output] = np.ones(1)
+    grads_cache[output] = np.asarray(1.)  # propagate scalar of shape ()
     for input in inputs:
         input._get_grad(contributions, grads_cache)
+    # Filter out intermediate gradients
     return OrderedDict([(input, grads_cache[input]) for input in inputs])
 
 
