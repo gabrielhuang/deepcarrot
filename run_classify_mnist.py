@@ -32,6 +32,7 @@ class Network(object):
     def __init__(self, hidden):
         self.dense = [
             dc.layers.Dense(28*28, hidden),
+            dc.layers.Dense(hidden, hidden),
             dc.layers.Dense(hidden, 10)]
 
     def __call__(self, x):
@@ -39,6 +40,8 @@ class Network(object):
                 >> self.dense[0]
                 >> dc.relu
                 >> self.dense[1]
+                >> dc.relu
+                >> self.dense[2]
                 >> dc.logsoftmax)
 
     def parameters(self):
@@ -47,6 +50,11 @@ class Network(object):
 
 net = Network(hidden=64)
 parameters = net.parameters()
+optimizer = dc.optim.SGD(parameters, lr=0.001, momentum=0.9)
+train_avg_loss = 0.
+test_avg_loss = 0.
+test_avg_accuracy = 0.
+smooth = 0.99
 
 for iteration, (data, target) in enumerate(train_iter):
 
@@ -57,16 +65,34 @@ for iteration, (data, target) in enumerate(train_iter):
     output = net(data) >> 'output'
 
     # Loss
-    loss = dc.nll(output, target)
+    train_loss = dc.nll(output, target)
 
     # Backward
-    grad = dc.grad(loss, parameters)
+    grad = dc.grad(train_loss, parameters)
 
     # Update
-    dc.optim.sgd(parameters, grad, lr=0.1)
+    optimizer.step(grad)
 
+    # Same thing with test set
+    data, target = test_iter.next()
+    data = dc.Variable(data.reshape(len(data), -1))
+    target = dc.Variable(target)
+    output = net(data)
+    prediction = dc.argmax(output)
+    test_loss = dc.nll(output, target)
+    test_accuracy = dc.accuracy(prediction, target)
+
+    # Log
+    train_avg_loss = smooth * train_avg_loss + (1 - smooth) * train_loss.data
+    test_avg_loss = smooth * test_avg_loss + (1 - smooth) * test_loss.data
+    test_avg_accuracy = smooth*test_avg_accuracy + (1-smooth) * test_accuracy.data
+    train_unbiased_loss = train_avg_loss / (1 - smooth ** (iteration + 1))
+    test_unbiased_loss = test_avg_loss / (1 - smooth ** (iteration + 1))
+    test_unbiased_accuracy = test_avg_accuracy/ (1-smooth**(iteration+1))
 
     # Back to numpy
     if iteration % log_interval == 0:
         print 'Iteration', iteration
-        print 'Training loss', loss
+        print 'Train loss', train_unbiased_loss
+        print 'Test  loss', test_unbiased_loss
+        print 'Test  accuracy', test_unbiased_accuracy

@@ -13,6 +13,8 @@ class Dense(object):
         self.bias = Variable(np.random.uniform(size=out_dims)*0.01, name='b')
 
     def __call__(self, inputs):
+        # Careful with broadcast!!
+        # For instance here bias is broadcast
         out = core.matmatmul(inputs, self.weight.t()) + self.bias
         return out
 

@@ -76,13 +76,18 @@ class AbstractVariable(object):
 
     def sum(self, axis=None):
         return ComputedVariable([self],
-                                SumOperator(),
+                                SumOperator(axis),
                                 name='Sum({})'.format(self.name))
 
     def logsoftmax(self, axis):
         return ComputedVariable([self],
                                 LogSoftmaxOperator(axis),
                                 name='LogSoftmax({})'.format(self.name))
+
+    def argmax(self, axis=None):
+        return ComputedVariable([self],
+                                ArgmaxOperator(axis),
+                                name='Argmax({})'.format(self.name))
 
 
 class LeafVariable(AbstractVariable):
@@ -200,6 +205,7 @@ class Jacobian(object):
 class MultiplyOperator(Operator):
 
     def _call(self, (a, b)):
+        assert a.shape == b.shape, 'No broadcasting for now'
         return a*b
 
     def _get_jacobians(self, (a, b)):
@@ -214,8 +220,22 @@ class AddOperator(Operator):
         return a+b
 
     def _get_jacobians(self, (a, b)):
-        jacobian_a = Jacobian(lambda grad: grad, a.shape, a.shape)
-        jacobian_b = Jacobian(lambda grad: grad, b.shape, b.shape)
+        # Need to detect broadcasting
+        def get_closure(dst):
+            def closure(grad):
+                # Sum up contributions of grad until same shape as b
+                while len(grad.shape) > len(dst.shape):
+                    grad = grad.sum(axis=0)
+                # Sum up when b dimension is singleton
+                for i in xrange(len(dst.shape)):
+                    if dst.shape[i] < grad.shape[i]:  # was broadcasted
+                        grad = grad.sum(axis=i, keepdims=True)
+                return grad
+            return closure
+        # Get output dimension
+        out = a+b
+        jacobian_a = Jacobian(get_closure(a), a.shape, out.shape)
+        jacobian_b = Jacobian(get_closure(b), b.shape, out.shape)
         return [jacobian_a, jacobian_b]
 
 
@@ -338,6 +358,22 @@ class SumOperator(Operator):
             return [jac]
 
 
+class ArgmaxOperator(Operator):
+
+    def __init__(self, axis=None):
+        '''
+        Sum and reduce, either over one or all axes.
+        :param axis:
+        '''
+        self.axis = axis
+
+    def _call(self, (a,)):
+        return a.argmax(axis=self.axis)
+
+    def _get_jacobians(self, (a,)):
+        raise Exception('Argmax is not differentiable.')
+
+
 class LogSoftmaxOperator(Operator):
 
     def __init__(self, axis):
@@ -366,16 +402,68 @@ class LogSoftmaxOperator(Operator):
         return [jac]
 
 
+class SumOperator(Operator):
+
+    def __init__(self, axis=None):
+        '''
+        Sum and reduce, either over one or all axes.
+        :param axis:
+        '''
+        self.axis = axis
+
+    def _call(self, (a,)):
+        return a.sum(axis=self.axis)
+
+    def _get_jacobians(self, (a,)):
+        if self.axis is None:
+
+            # This assumes grad is scalar (shape is empty tuple () )
+            def closure(grad):
+                assert grad.shape == (), 'gradient must be scalar'
+                return grad * np.ones_like(a)
+
+            return [Jacobian(closure, a.shape, ())]
+            #return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
+        else:
+            out_shape = list(a.shape)
+            del out_shape[self.axis]
+
+            def closure(grad):
+                grad = np.expand_dims(grad, self.axis)
+                return np.repeat(grad, a.shape[self.axis], self.axis)
+
+            jac = Jacobian(closure, a.shape, out_shape)
+            return [jac]
+
+
+class AccuracyOperator(Operator):
+
+    def _call(self, (a, b)):
+        return (a==b).astype(float).mean()
+
+    def _get_jacobians(self, (a,)):
+        raise Exception('Not differentiable')
+
+
 def nll(output, target):
     return ComputedVariable([output, target],
                             NLLLossOperator(),
                             name='nll({},{})'.format(output.name, target.name))
 
+def accuracy(output, target):
+    return ComputedVariable([output, target],
+                            AccuracyOperator(),
+                            name='accuracy({},{})'.format(output.name, target.name))
+
 def relu(m):
     return m.relu()
 
+
 def logsoftmax(m, axis=1):
     return m.logsoftmax(axis)
+
+def argmax(m, axis=1):
+    return m.argmax(axis)
 
 def matmatmul(m, n):
     return ComputedVariable([m, n],
