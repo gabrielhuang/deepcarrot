@@ -267,6 +267,41 @@ class SumOperator(Operator):
         else:
             out_shape = list(a.shape)
             del out_shape[self.axis]
+
+            def closure(grad):
+                grad = np.expand_dims(grad, self.axis)
+                return np.repeat(grad, a.shape[self.axis], self.axis)
+
+            jac = Jacobian(closure, a.shape, out_shape)
+            return [jac]
+
+
+class LogSoftmaxOperator(Operator):
+
+    def __init__(self, axis):
+        '''
+        Softmax reduce over an axis.
+        '''
+        self.axis = axis
+
+    def _call(self, (a,)):
+        # Get maximum and subtract it
+        maxes = np.max(a, self.axis)
+        #b =
+        return a.sum(axis=self.axis)
+
+    def _get_jacobians(self, (a,)):
+        if self.axis is None:
+            # This assumes grad is scalar (shape is empty tuple () )
+            return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
+        else:
+            out_shape = list(a.shape)
+            del out_shape[self.axis]
+            grad = np.exp
+
+            def closure(grad):
+                grad = np.expand_dims(grad, self.axis)
+                return np.repeat(grad, a.shape[self.axis], self.axis),
             jac = Jacobian(lambda grad: np.repeat(grad, a.shape[self.axis], self.axis),
                      a.shape,
                      out_shape)
