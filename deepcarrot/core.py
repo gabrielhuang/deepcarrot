@@ -88,6 +88,7 @@ class AbstractVariable(object):
 class LeafVariable(AbstractVariable):
 
     def __init__(self, data, name=DEFAULT_VAR):
+        assert isinstance(data, np.ndarray), 'Input to LeafVariable can only be np.ndarray'
         AbstractVariable.__init__(self, data, name)
 
     def _get_contributions(self, contributors=None):
@@ -369,6 +370,12 @@ def nll(output, target):
     return ComputedVariable([output, target],
                             NLLLossOperator(),
                             name='nll({},{})'.format(output.name, target.name))
+
+def relu(m):
+    return m.relu()
+
+def logsoftmax(m, axis=1):
+    return m.logsoftmax(axis)
 
 def matmatmul(m, n):
     return ComputedVariable([m, n],

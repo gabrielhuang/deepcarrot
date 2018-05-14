@@ -36,3 +36,6 @@ class LogSoftmax(object):
     def __call__(self, inputs):
         out = inputs.logsoftmax(self.axis)
         return out
+
+    def parameters(self):
+        return []

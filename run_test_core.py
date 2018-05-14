@@ -24,13 +24,12 @@ test_operator(dc.MatrixMatrixOperator(), ([[1,2],[3,4]], np.identity(2)), verbos
 
 # Define 3 layers
 layer = dc.layers.Dense(5, 3)
-relu = dc.layers.Relu()
 logsoftmax = dc.layers.LogSoftmax()
 
 # Input and output
 x = dc.Variable([np.arange(5), np.arange(5,10)], name='x')
 target = dc.Variable([2, 1], name='target')
-output = x >> layer >> relu >> logsoftmax >> 'output'
+output = x >> layer >> dc.relu >> logsoftmax >> 'output'
 # layers can also be applied using classic composition
 
 loss = dc.nll(output, target)
