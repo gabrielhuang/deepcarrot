@@ -27,7 +27,7 @@ class AbstractVariable(object):
             else:
                 grad = output._get_grad(contributions, grads_cache)
 
-            total_grad += jacobian.T.dot(grad.flatten()).reshape(self.data.shape)  # need different operator?
+            total_grad += jacobian(grad)
             # here it could be replaced with apply
         grads_cache[self] = total_grad
         return total_grad
@@ -37,6 +37,11 @@ class AbstractVariable(object):
 
     # Syntactic sugar
     def t(self):
+        '''
+        Transpose a matrix. Only works for 2D matrices.
+
+        :return:
+        '''
         return ComputedVariable([self],
                                 TransposeOperator(),
                                 name='Transpose({})'.format(self.name))
@@ -68,8 +73,8 @@ class AbstractVariable(object):
 
 class LeafVariable(AbstractVariable):
 
-    def __init__(self, data, name=''):
-        AbstractVariable.__init__(self, data, name=DEFAULT_VAR)
+    def __init__(self, data, name=DEFAULT_VAR):
+        AbstractVariable.__init__(self, data, name)
 
     def _get_contributions(self, contributors=None):
         raise Exception('Cannot differentiate leaf variable.')
@@ -121,14 +126,92 @@ class Operator(object):
         raise Exception('Implement backward pass.')
 
 
-class MultiplyOperator(Operator):  # create operator later
+class Jacobian(object):
+
+    def __init__(self, function, in_shape, out_shape):
+        '''
+        Build an abstract representation of a Jacobian as a linear function.
+
+        :param function: Either linear function or 2D np.ndarray
+        :param jacobian_shape:
+        '''
+        assert not isinstance(function, np.ndarray), 'Matrix function not supported anymore. Please provide function'
+        #if not isinstance(function, np.ndarray):  # is function
+        #    if jacobian_shape is None:
+        #        raise ArgumentError('Provide jacobian shape when "function" is not a numpy array.')
+        #else:  # is array
+        #    jacobian_shape = function.shape
+        #assert len(jacobian_shape) == 2, 'Jacobian must represent 2D matrix acting on flattened vectors.'
+        self.function = function
+        self.in_shape = in_shape
+        self.out_shape = out_shape
+
+    def jacobian_shape(self):
+        return (prod(self.out_shape), prod(self.in_shape))
+
+    def to_matrix(self):
+        '''
+        This is for testing. Don't use it for computation, the current implementation is slooooow.
+
+        It represents the Jacobian explicitly as a 2D np.ndarray of shape (output_size, input_size).
+        It
+        :return: A jacobian matrix of shape jacobian_shape
+        '''
+        if isinstance(self.function, np.ndarray):
+            return self.function
+        else:
+            possible_grads = np.identity(self.jacobian_shape()[0])
+            inputs = []
+            for grad in possible_grads:
+                input = self.function(grad.reshape(self.out_shape)).flatten()
+                inputs.append(input)
+            return np.asarray(inputs)
+
+    def backward(self, grad):
+        '''
+        Left-Multiply a gradient by the transpose of
+        :param grad:
+        :return:
+        '''
+        if isinstance(self.function, np.ndarray):
+            return self.function.T.dot(grad)  # need transpose because grad.shape == [jacobian_shape.size()[0]]
+        else:
+            return self.function(grad)
+
+    def __call__(self, grad):
+        return self.backward(grad)
+
+
+class MultiplyOperatorOld(Operator):  # create operator later
 
     def _call(self, (a, b)):
         return a*b
 
     def _get_jacobians(self, (a, b)):
-        jacobian_a = np.diag(b)
-        jacobian_b = np.diag(a)
+        jacobian_a = Jacobian(np.diag(b))
+        jacobian_b = Jacobian(np.diag(a))
+        return [jacobian_a, jacobian_b]
+
+
+class MultiplyOperator(Operator):
+
+    def _call(self, (a, b)):
+        return a*b
+
+    def _get_jacobians(self, (a, b)):
+        jacobian_a = Jacobian(lambda x: x*b, a.shape, a.shape)
+        jacobian_b = Jacobian(lambda x: x*a, b.shape, b.shape)
+        return [jacobian_a, jacobian_b]
+
+
+class AddOperatorOld(Operator):  # create operator later
+
+    def _call(self, (a, b)):
+        return a+b
+
+    def _get_jacobians(self, (a, b)):
+        jacobian_a = Jacobian(np.identity(a.size))  # do those actually make sense for other shapes?
+        jacobian_b = Jacobian(np.identity(b.size))
         return [jacobian_a, jacobian_b]
 
 
@@ -138,45 +221,12 @@ class AddOperator(Operator):  # create operator later
         return a+b
 
     def _get_jacobians(self, (a, b)):
-        jacobian_a = np.identity(a.size)  # do those actually make sense for other shapes?
-        jacobian_b = np.identity(b.size)
+        jacobian_a = Jacobian(lambda grad: grad, a.shape, a.shape)
+        jacobian_b = Jacobian(lambda grad: grad, b.shape, b.shape)
         return [jacobian_a, jacobian_b]
 
 
-class MatrixVectorOperator(Operator):
-
-    def _call(self, (a, b)):
-        return a.dot(b)
-
-    def _get_jacobians(self, (a, b)):
-        jacobian_a = b
-        jacobian_b = a
-        return [jacobian_a, jacobian_b]
-
-#
-# class MatrixVectorOperator(Operator):
-#
-#     def _call(self, (a, b)):
-#         return a.dot(b)
-#
-#     def _get_jacobians(self, (a, b)):
-#         jacobian_a = b
-#         jacobian_b = a
-#         return [jacobian_a, jacobian_b]
-#
-#
-# class MatrixVectorOperator(Operator):
-#
-#     def _call(self, (a, b)):
-#         return a.dot(b)
-#
-#     def _get_jacobians(self, (a, b)):
-#         jacobian_a = b
-#         jacobian_b = a
-#         return [jacobian_a, jacobian_b]
-
-
-class TransposeOperator(Operator):
+class TransposeOperatorOld(Operator):
 
     def _call(self, (a,)):
         assert len(a.shape) == 2
@@ -187,7 +237,19 @@ class TransposeOperator(Operator):
         for i in xrange(a.shape[0]):
             for j in xrange(a.shape[1]):
                 jacobian_a[j, i, i, j] = 1
-        return [jacobian_a.reshape(a.size, a.size)]
+        jacobian_a = Jacobian(jacobian_a.reshape(a.size, a.size))
+        return [jacobian_a]
+
+
+class TransposeOperator(Operator):
+
+    def _call(self, (a,)):
+        assert len(a.shape) == 2
+        return a.T
+
+    def _get_jacobians(self, (a,)):
+        jacobian_a = Jacobian(lambda grad: grad.T, a.shape, a.T.shape)
+        return [jacobian_a]
 
 
 # more efficient than jacobian is a linear operator (e.g. matmul)
@@ -196,19 +258,18 @@ def prod(shape):
         return 1
     return int(np.prod(shape))
 
-class MatrixMatrixOperator(Operator):
+class MatrixMatrixOperatorOld(Operator):
 
     def _call(self, (a, b)):
         assert len(a.shape) == 2 and len(b.shape) == 2
         return a.dot(b)
 
-#p[i,j] = sum_k a[i,k] b[k,j]
-# dp[i,j]/da[i',j'] = (i=i', k=j') b[j',j] , for i=i', j, j'
-# dp[i,j]/da[i',j'] = (i=i', k=j') b[j',j] , for i=i', j, j'
-#pour a: jacob[i,j, i',j'] = 1{i'=i} b[j', j]
-#pour b: jacob[i,j, i',j'] = 1{i'=i} b[j', j]
-
     def _get_jacobians(self, (a, b)):
+        #p[i,j] = sum_k a[i,k] b[k,j]
+        # dp[i,j]/da[i',j'] = (i=i', k=j') b[j',j] , for i=i', j, j'
+        # dp[i,j]/da[i',j'] = (i=i', k=j') b[j',j] , for i=i', j, j'
+        #pour a: jacob[i,j, i',j'] = 1{i'=i} b[j', j]
+        #pour b: jacob[i,j, i',j'] = 1{i'=i} b[j', j]
         out_shape = (a.shape[0], b.shape[1])
         jacobian_a = np.zeros((out_shape + a.shape))
         jacobian_b = np.zeros((out_shape + b.shape))
@@ -216,7 +277,35 @@ class MatrixMatrixOperator(Operator):
             jacobian_a[i, :, i, :] = b.T
         for j in xrange(b.shape[1]):
             jacobian_b[:, j, :, j] = a
-        return [jacobian_a.reshape((prod(out_shape), a.size)), jacobian_b.reshape((prod(out_shape), b.size))]
+        jacobian_a = Jacobian(jacobian_a.reshape((prod(out_shape), a.size)))
+        jacobian_b = Jacobian(jacobian_b.reshape((prod(out_shape), b.size)))
+        return [jacobian_a, jacobian_b]
+
+
+class MatrixMatrixOperator(Operator):
+
+    def _call(self, (a, b)):
+        assert len(a.shape) == 2 and len(b.shape) == 2
+        return a.dot(b)
+
+    def _get_jacobians(self, (a, b)):
+        out_shape = (a.shape[0], b.shape[1])
+        jacobian_a = Jacobian(lambda grad: grad.dot(b.T), a.shape, out_shape)
+        def closure(grad):
+            return a.T.dot(grad)
+        jacobian_b = Jacobian(closure, b.shape, out_shape)
+        #jacobian_b = Jacobian(lambda grad: a.T.dot(grad), b.shape, out_shape)
+        return [jacobian_a, jacobian_b]
+
+
+class ReluOperatorOld(Operator):
+
+    def _call(self, (a,)):
+        return np.maximum(a, 0)
+
+    def _get_jacobians(self, (a,)):
+        jacobian_a = Jacobian(np.diag((a.flatten()>0).astype(np.float32)))
+        return [jacobian_a]
 
 
 class ReluOperator(Operator):
@@ -225,12 +314,17 @@ class ReluOperator(Operator):
         return np.maximum(a, 0)
 
     def _get_jacobians(self, (a,)):
-        return [np.diag((a.flatten()>0).astype(np.float32))]
+        jacobian_a = Jacobian(lambda grad: grad * (a > 0).astype(np.float32), a.shape, a.shape)
+        return [jacobian_a]
 
 
 class SumOperator(Operator):
 
     def __init__(self, axis=None):
+        '''
+        Sum and reduce, either over one or all axes.
+        :param axis:
+        '''
         self.axis = axis
 
     def _call(self, (a,)):
@@ -238,7 +332,7 @@ class SumOperator(Operator):
 
     def _get_jacobians(self, (a,)):
         if self.axis is None:
-            return [np.ones((1, a.size))]
+            return [Jacobian(np.ones((1, a.size)))]
         else:
             new_shape = list(a.shape)
             del new_shape[self.axis]
@@ -252,20 +346,34 @@ class SumOperator(Operator):
             for i in xrange(before_shape):
                 for j in xrange(after_shape):
                     jac[i, j, i, :, j] = 1
-            return [jac.reshape(before_shape*after_shape, before_shape*middle_shape*after_shape)]
+            jac = Jacobian(jac.reshape(before_shape*after_shape, before_shape*middle_shape*after_shape))
+            return [jac]
 
 
-        # Need to re-expand
-        np.ones(a.shape)
-        #jacobian_a = b
-        #return [jacobian_a, jacobian_b]
+class SumOperator(Operator):
 
+    def __init__(self, axis=None):
+        '''
+        Sum and reduce, either over one or all axes.
+        :param axis:
+        '''
+        self.axis = axis
 
+    def _call(self, (a,)):
+        return a.sum(axis=self.axis)
 
-def matmul(m, v):
-    return ComputedVariable([m, v],
-                            MatrixVectorOperator(),
-                            name='matmul({},{})'.format(m.name, v.name))
+    def _get_jacobians(self, (a,)):
+        if self.axis is None:
+            # This assumes grad is scalar (shape is empty tuple () )
+            return [Jacobian(lambda grad: grad * np.ones_like(a), a.shape, ())]
+        else:
+            out_shape = list(a.shape)
+            del out_shape[self.axis]
+            jac = Jacobian(lambda grad: np.repeat(grad, a.shape[self.axis], self.axis),
+                     a.shape,
+                     out_shape)
+            return [jac]
+
 
 def matmatmul(m, n):
     return ComputedVariable([m, n],
@@ -290,7 +398,7 @@ def grad(output, inputs):
 
 def test_operator_jacobian(operator, inputs, epsilon=1e-5):
     inputs = [np.asarray(input, dtype=np.float32) for input in inputs]
-    analytical = operator.get_jacobians(inputs)
+    analytical = [jac.to_matrix() for jac in operator.get_jacobians(inputs)]
     numerical = [np.zeros_like(jac) for jac in analytical]
     value = operator(inputs)
     diffs = []
