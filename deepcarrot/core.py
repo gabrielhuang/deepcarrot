@@ -318,7 +318,7 @@ class ReluOperator(Operator):
         return [jacobian_a]
 
 
-class SumOperator(Operator):
+class SumOperatorOld(Operator):
 
     def __init__(self, axis=None):
         '''
