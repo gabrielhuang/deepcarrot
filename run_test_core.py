@@ -13,13 +13,15 @@ def test_operator(operator, inputs, verbose=True, *args, **kwargs):
     return diffs
 
 
-verbose = False
+verbose = True
 test_operator(dc.AddOperator(), ([1,2],[3,4]), verbose)
 test_operator(dc.MultiplyOperator(), ([1,2],[3,4]), verbose)
 test_operator(dc.SumOperator(), ([1,2,3,4],), verbose)
 test_operator(dc.SumOperator(axis=0), ([[1,2,3,4],[5,6,7,8]],), verbose)
 test_operator(dc.ReluOperator(), ([[-1, 1, -2, 2]],), verbose)
 test_operator(dc.MatrixMatrixOperator(), ([[1,2],[3,4]], np.identity(2)), verbose)
+#test_operator(dc.LogSoftmaxOperator(axis=1), ([[0.04, 0.7, 0.26]],), verbose, epsilon=1e-6)
+test_operator(dc.LogSoftmaxOperator(axis=1), ([[0.2, 0.5, 0.3]],), verbose, epsilon=1e-3)
 
 
 # Define 3 layers

@@ -1,9 +1,11 @@
 import numpy as np
 from collections import OrderedDict
 import copy
+import numbers
 
 
 DEFAULT_VAR = '<var>'
+FloatType = np.float64
 
 
 class AbstractVariable(object):
@@ -93,7 +95,8 @@ class AbstractVariable(object):
 class LeafVariable(AbstractVariable):
 
     def __init__(self, data, name=DEFAULT_VAR):
-        assert isinstance(data, np.ndarray), 'Input to LeafVariable can only be np.ndarray'
+        data = np.asarray(data)
+        #assert isinstance(data.dtype, numbers.Number), 'Input to LeafVariable can only be iterables of float or int'
         AbstractVariable.__init__(self, data, name)
 
     def _get_contributions(self, contributors=None):
@@ -132,11 +135,11 @@ class ComputedVariable(AbstractVariable):
 class Operator(object):
 
     def __call__(self, inputs):
-        inputs = [np.asarray(input, dtype=np.float32) for input in inputs]
+        inputs = [np.asarray(input, dtype=FloatType) for input in inputs]
         return self._call(inputs)
 
     def get_jacobians(self, inputs):
-        inputs = [np.asarray(input, dtype=np.float32) for input in inputs]
+        inputs = [np.asarray(input, dtype=FloatType) for input in inputs]
         return self._get_jacobians(inputs)
 
     def _call(self, inputs):
@@ -163,8 +166,8 @@ class Jacobian(object):
         #    jacobian_shape = function.shape
         #assert len(jacobian_shape) == 2, 'Jacobian must represent 2D matrix acting on flattened vectors.'
         self.function = function
-        self.in_shape = in_shape
-        self.out_shape = out_shape
+        self.in_shape = tuple(in_shape)  # list will break stuff such as indexing
+        self.out_shape = tuple(out_shape)
 
     def jacobian_shape(self):
         return (prod(self.out_shape), prod(self.in_shape))
@@ -174,22 +177,32 @@ class Jacobian(object):
         This is for testing. Don't use it for computation, the current implementation is slooooow.
 
         It represents the Jacobian explicitly as a 2D np.ndarray of shape (output_size, input_size).
-        It
+        Warning: self.function represents the transpose of the JAcobian.
         :return: A jacobian matrix of shape jacobian_shape
         '''
         if isinstance(self.function, np.ndarray):
             return self.function
         else:
-            possible_grads = np.identity(self.jacobian_shape()[0])
-            inputs = []
-            for grad in possible_grads:
-                input = self.function(grad.reshape(self.out_shape)).flatten()
-                inputs.append(input)
-            return np.asarray(inputs)
+            #possible_grads = np.identity(self.jacobian_shape()[0])
+            #inputs = []
+            #for grad in possible_grads:
+            #    input = self.function(grad.reshape(self.out_shape)).flatten()
+            #    inputs.append(input)
+            #return np.asarray(inputs)  # Need to transpose because function represents transpose of Jacobian
+            jacobian = np.zeros(self.out_shape + self.in_shape)
+            for i in xrange(prod(self.out_shape)):
+                unravel_i = np.unravel_index(i, self.out_shape)
+                grad = np.zeros(self.out_shape)
+                grad[unravel_i] = 1.
+                back = self.function(grad)
+                for j in xrange(prod(self.in_shape)):
+                    unravel_j = np.unravel_index(j, self.in_shape)
+                    jacobian[unravel_i + unravel_j] = back[unravel_j]
+            return jacobian  # Need to transpose because function represents transpose of Jacobian
 
     def backward(self, grad):
         '''
-        Left-Multiply a gradient by the transpose of
+        Left-Multiply a gradient by the transpose of Jacobian
         :param grad:
         :return:
         '''
@@ -251,12 +264,12 @@ class NLLLossOperator(Operator):
         self.average = average
 
     def __call__(self, inputs):
-        output = np.asarray(inputs[0], dtype=np.float32)
+        output = np.asarray(inputs[0], dtype=FloatType)
         target = np.asarray(inputs[1], dtype=np.int64)
         return self._call([output, target])
 
     def get_jacobians(self, inputs):
-        output = np.asarray(inputs[0], dtype=np.float32)
+        output = np.asarray(inputs[0], dtype=FloatType)
         target = np.asarray(inputs[1], dtype=np.int64)
         return self._get_jacobians([output, target])
 
@@ -276,7 +289,7 @@ class NLLLossOperator(Operator):
                 out /= float(len(output))
             return out * grad
 
-        jacobian_output = Jacobian(closure, output.shape, 0)
+        jacobian_output = Jacobian(closure, output.shape, ())
         return [jacobian_output, None]
 
 
@@ -320,7 +333,7 @@ class ReluOperator(Operator):
         return np.maximum(a, 0)
 
     def _get_jacobians(self, (a,)):
-        jacobian_a = Jacobian(lambda grad: grad * (a > 0).astype(np.float32), a.shape, a.shape)
+        jacobian_a = Jacobian(lambda grad: grad * (a > 0).astype(FloatType), a.shape, a.shape)
         return [jacobian_a]
 
 
@@ -384,19 +397,30 @@ class LogSoftmaxOperator(Operator):
 
     def _call(self, (a,)):
         # Get maximum and subtract it
-        maxes = np.max(a, self.axis, keepdims=True)
-        a_adjusted = a - maxes  # will broadcast
+        a_max = np.max(a, self.axis, keepdims=True)
+        a_adjusted = a - a_max  # will broadcast
         exp = np.exp(a_adjusted)
         Z = exp.sum(axis=self.axis, keepdims=True)
         log_softmax = a_adjusted - np.log(Z)
         return log_softmax
 
+    def softmax(self, (a,)):
+        a_max = np.max(a, self.axis, keepdims=True)
+        a_adjusted = a - a_max  # will broadcast
+        exp = np.exp(a_adjusted)
+        Z = exp.sum(axis=self.axis, keepdims=True)
+        return exp / Z
+
+    # log sum exp(u) = log sum exp(u[i]-umax)exp(umax) = umax * log sum expu[i]-umax)
+
     def _get_jacobians(self, (a,)):
         log_softmax = self([a])
-        softmax = np.exp(log_softmax)  # potentially numerically unstable?
+        softmax = self.softmax([a])
 
         def closure(grad):
-            return grad - np.sum(grad*softmax, axis=self.axis, keepdims=True)
+            # wrong! that was for transpose
+            # return grad - np.sum(grad*softmax, axis=self.axis, keepdims=True)
+            return grad - softmax * np.sum(grad, axis=self.axis, keepdims=True)
 
         jac = Jacobian(closure, a.shape, a.shape)
         return [jac]
@@ -488,19 +512,24 @@ def grad(output, inputs):
 
 
 def test_operator_jacobian(operator, inputs, epsilon=1e-5):
-    inputs = [np.asarray(input, dtype=np.float32) for input in inputs]
+    inputs = [np.asarray(input, dtype=FloatType) for input in inputs]
     analytical = [jac.to_matrix() for jac in operator.get_jacobians(inputs)]
     numerical = [np.zeros_like(jac) for jac in analytical]
     value = operator(inputs)
     diffs = []
-    for j, input in enumerate(inputs):
-        for i in xrange(input.size):
+    for input_idx, input in enumerate(inputs):
+        for j in xrange(input.size):
             inputs_shifted = copy.deepcopy(inputs)
-            unraveled_i = np.unravel_index(i, input.shape)
-            inputs_shifted[j][unraveled_i] += epsilon
+            unraveled_j = np.unravel_index(j, input.shape)
+            inputs_shifted[input_idx][unraveled_j] += epsilon
             value_shifted = operator(inputs_shifted)
-            numerical[j][:, i] = (value_shifted-value).flatten() / epsilon
-        diff = np.abs((analytical[j]-numerical[j])).mean()
+            grad = (value_shifted - value) / epsilon
+            for i in xrange(grad.size):
+                # problems with shape () ? i think so
+                unraveled_i = np.unravel_index(i, grad.shape)
+                numerical[input_idx][unraveled_i + unraveled_j] = grad[unraveled_i]
+            #numerical[input_idx][:, i] = (value_shifted-value).flatten() / epsilon  # fill in columns first
+        diff = np.abs((analytical[input_idx]-numerical[input_idx])).mean()
         diffs.append(diff)
     return diffs, analytical, numerical
 
