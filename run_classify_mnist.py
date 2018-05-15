@@ -33,6 +33,7 @@ class Network(object):
         self.dense = [
             dc.layers.Dense(28*28, hidden),
             dc.layers.Dense(hidden, hidden),
+            dc.layers.Dense(hidden, hidden),
             dc.layers.Dense(hidden, 10)]
 
     def __call__(self, x):
@@ -42,6 +43,8 @@ class Network(object):
                 >> self.dense[1]
                 >> dc.relu
                 >> self.dense[2]
+                >> dc.relu
+                >> self.dense[3]
                 >> dc.logsoftmax)
 
     def parameters(self):
@@ -50,8 +53,8 @@ class Network(object):
 
 net = Network(hidden=64)
 parameters = net.parameters()
-#optimizer = dc.optim.SGD(parameters, lr=0.1, momentum=0.1)
-optimizer = dc.optim.Adam(parameters, lr=0.001)
+optimizer = dc.optim.SGD(parameters, lr=0.1, momentum=0.9)
+#optimizer = dc.optim.Adam(parameters, lr=0.001)
 train_avg_loss = 0.
 test_avg_loss = 0.
 test_avg_accuracy = 0.
