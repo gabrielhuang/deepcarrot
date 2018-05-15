@@ -50,7 +50,8 @@ class Network(object):
 
 net = Network(hidden=64)
 parameters = net.parameters()
-optimizer = dc.optim.SGD(parameters, lr=0.001, momentum=0.0)
+#optimizer = dc.optim.SGD(parameters, lr=0.1, momentum=0.1)
+optimizer = dc.optim.Adam(parameters, lr=0.001)
 train_avg_loss = 0.
 test_avg_loss = 0.
 test_avg_accuracy = 0.
